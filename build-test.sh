@@ -106,7 +106,16 @@ fi
 # 处理依赖
 echo "处理依赖..."
 go mod tidy
-go generate
+# 在本机架构下执行 go generate，避免生成器二进制架构与运行环境不匹配导致 exec format error
+ORIG_GOOS="${GOOS}"
+ORIG_GOARCH="${GOARCH}"
+unset GOOS
+unset GOARCH
+echo "在本机架构下执行 go generate (未设置 GOOS/GOARCH) 以生成 plugin/zz.go"
+go generate ./...
+# 还原交叉编译环境变量
+export GOOS="${ORIG_GOOS}"
+export GOARCH="${ORIG_GOARCH}"
 
 # 生成后的校验：确保 azroute/splitnet/georoute 被包含到生成代码
 if [ -f plugin/zz.go ]; then
@@ -158,22 +167,5 @@ if go build -o coredns; then
     echo ""
     echo "注意: 临时目录将在脚本结束后自动清理"
 fi
-
-./bin/coredns-with-plugins -conf Corefile
-
-# 在启动前尝试列出编译进二进制的插件（若支持）
-if ./bin/coredns-with-plugins -plugins >/dev/null 2>&1; then
-    echo "已编译进二进制的插件列表:"
-    ./bin/coredns-with-plugins -plugins
-fi
-
-# # 清理临时文件
-# if [ -n "$CI" ]; then
-#     echo "CI环境下跳过长时间sleep，立即清理临时文件..."
-# else
-#     echo "清理临时文件..."
-#     sleep 3600
-# fi
-# rm -rf "$TEMP_DIR"
 
 echo "✅ 测试完成！"
