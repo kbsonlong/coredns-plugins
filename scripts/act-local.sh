@@ -42,10 +42,25 @@ if [ "$HOST_ARCH" = "arm64" ] || [ "$HOST_ARCH" = "aarch64" ]; then
   CONTAINER_ARCH="linux/arm64"
 fi
 
+# 在容器中挂载的 Docker daemon socket 路径固定为 /var/run/docker.sock，
+# 以避免在 macOS/Colima 上将主机上的 Unix socket 路径（例如 $HOME/.colima/.../docker.sock 或 $HOME/.docker/run/docker.sock）
+# 直接绑定到容器导致的 “operation not supported” 报错。
+CONTAINER_DAEMON_SOCKET="/var/run/docker.sock"
+
+# 检查 act 是否支持 --container-daemon-socket 参数（0.2.59+ 支持）。
+EXTRA_ACT_ARGS=""
+if act --help 2>/dev/null | grep -q "container-daemon-socket"; then
+  EXTRA_ACT_ARGS="--container-daemon-socket ${CONTAINER_DAEMON_SOCKET}"
+  echo "[act-local] 已启用容器内 Docker socket 挂载: ${CONTAINER_DAEMON_SOCKET}"
+else
+  echo "[act-local] 当前 act 版本不支持 --container-daemon-socket 参数，将使用默认行为"
+fi
+
 act pull_request \
   -j build-coredns-with-plugins \
   -P ubuntu-latest=${UBUNTU_IMG} \
   -P macos-latest=${UBUNTU_IMG} \
-  --container-architecture ${CONTAINER_ARCH}
+  --container-architecture ${CONTAINER_ARCH} \
+  ${EXTRA_ACT_ARGS}
 
 echo "[act-local] 运行完成，构建工件可在 ./build-output/ 下查看（若作业成功）"
