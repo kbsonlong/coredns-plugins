@@ -11,15 +11,15 @@
 ```mermaid
 graph TD
     Client-->|DNS Query|CoreDNS
-    CoreDNS-->|hosts插件|hosts
-    hosts-->|A/AAAA记录|azroute
-    azroute-->|API拉取AZ映射|API
+    CoreDNS-->|解析插件(如 hosts/forward)|Resolver
+    Resolver-->|A/AAAA记录|azroute
+    azroute-->|API/文件拉取AZ映射|AZSource
     azroute-->|优选IP|Client
 ```
 
-- hosts 插件负责域名到 IP 的静态解析。
-- azroute 插件负责根据客户端 IP 匹配 AZ，并对 hosts 返回的 IP 进行 AZ 优选。
-- azroute 插件定时从 API 拉取网段-AZ 映射，支持热加载。
+- 解析插件（如 hosts 或 forward）负责域名到 IP 的解析。
+- azroute 插件负责根据客户端 IP 匹配 AZ，并对下游返回的 IP 进行 AZ 优选。
+- azroute 插件定时从 API 或本地文件拉取网段-AZ 映射，支持热加载。
 
 ## 3. 关键流程
 1. CoreDNS 收到 DNS 查询。

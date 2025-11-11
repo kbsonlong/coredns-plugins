@@ -13,7 +13,7 @@ azroute 是一个 CoreDNS 插件，支持基于可用区（AZ）就近调度 DNS
 
 > **插件顺序极其重要！**
 >
-> - `plugin.cfg` 中 azroute 必须在 hosts 之前：
+> - azroute 必须位于用于返回解析结果的插件之前（例如 hosts 或 forward）：
 >   ```
 >   azroute:azroute
 >   hosts:hosts
@@ -21,13 +21,25 @@ azroute 是一个 CoreDNS 插件，支持基于可用区（AZ）就近调度 DNS
 >   log:log
 >   ...
 >   ```
-> - Corefile 中顺序也要保持一致：
+> - Corefile 中顺序也要保持一致，以下给出两种示例：
 >   ```
+>   # 示例1：与 hosts 搭配
 >   azroute {
 >       azmap_api http://localhost:8080/azmap
+>       # 可选：本地文件
+>       # azmap_file ./azmap.json
 >   }
 >   hosts ./hosts {
 >       fallthrough
+>   }
+>   forward . 8.8.8.8
+>   log
+>   
+>   # 示例2：仅与 forward 搭配
+>   azroute {
+>       azmap_api http://localhost:8080/azmap
+>       # 可选：本地文件
+>       # azmap_file ./azmap.json
 >   }
 >   forward . 8.8.8.8
 >   log
