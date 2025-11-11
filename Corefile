@@ -1,0 +1,7 @@
+.:1053 {
+    azroute {
+        azmap_file ./azmap.json
+    }
+    forward . 8.8.8.8
+    log
+}
