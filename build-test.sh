@@ -92,6 +92,17 @@ cd "$TEMP_DIR/coredns"
 # 保持 CoreDNS module 路径不变 (github.com/coredns/coredns)，避免导入路径不一致问题
 echo "保持 CoreDNS module 路径不变，直接使用本地源码进行编译"
 
+# 规范化 go.mod 的 go 版本格式，去掉补丁号（例如 1.24.0 -> 1.24），避免 'invalid go version' 错误
+if grep -qE '^go [0-9]+\.[0-9]+\.[0-9]+' go.mod; then
+    echo "规范化 go.mod 的 go 版本为不带补丁号的格式"
+    sed -i.bak -E 's/^go ([0-9]+)\.([0-9]+)\.[0-9]+$/go \1.\2/' go.mod || true
+fi
+# 同步规范化 toolchain 行（如果存在补丁号）
+if grep -qE '^toolchain go[0-9]+\.[0-9]+\.[0-9]+' go.mod 2>/dev/null; then
+    echo "规范化 go.mod 的 toolchain 版本为不带补丁号的格式"
+    sed -i.bak -E 's/^toolchain go([0-9]+)\.([0-9]+)\.[0-9]+$/toolchain go\1.\2/' go.mod || true
+fi
+
 # 处理依赖
 echo "处理依赖..."
 go mod tidy
