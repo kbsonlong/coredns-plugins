@@ -33,11 +33,19 @@ graph TD
 - 支持自定义调度策略（如权重、健康检查等）。
 - 支持更多类型的 DNS 记录。
 
+### 4.1 基于文件的AZ映射（新增）
+- 新增 azmap_file 配置项，支持从本地文件加载网段-AZ映射；文件格式与 API 相同（JSON 数组）。
+- 当同时配置 azmap_api 与 azmap_file 时，合并两者：文件条目覆盖相同 subnet 的 API 条目，其余保持并集。
+- 插件每 60s 周期性热加载两类来源，重建 CIDR 索引（cidranger）并清理 LRU 缓存。
+
 ## 5. 主要结构
 - AzRoute：插件主结构体，维护 AZ 映射、API 地址等。
 - findAZ：根据 IP 匹配 AZ。
 - ServeDNS：主处理逻辑，捕获 hosts 返回的 IP 并优选。
-- fetchAzMap：定时拉取 API，热加载数据。
+- setAzMap：统一设置映射并重建索引与缓存。
+- fetchAzMapFromAPI：拉取 API 映射。
+- fetchAzMapFromFile：读取文件映射。
+- combineAzMaps：合并 API 与文件来源的映射。
 
 ## 6. 典型时序图
 ```mermaid
@@ -55,4 +63,4 @@ sequenceDiagram
     API-->>azroute: 返回网段-AZ
     azroute-->>CoreDNS: 优选IP
     CoreDNS-->>Client: 返回结果
-``` 
+```

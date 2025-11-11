@@ -1,37 +1,39 @@
 package azroute
 
 import (
-	context "context"
-	"encoding/json"
-	"io"
-	"log"
-	"net"
-	"net/http"
-	"strings"
-	"sync"
-	"time"
+    context "context"
+    "encoding/json"
+    "io"
+    "log"
+    "net"
+    "net/http"
+    "os"
+    "strings"
+    "sync"
+    "time"
 
-	"github.com/coredns/coredns/plugin"
-	lru "github.com/hashicorp/golang-lru"
-	"github.com/miekg/dns"
-	"github.com/yl2chen/cidranger"
+    "github.com/coredns/coredns/plugin"
+    lru "github.com/hashicorp/golang-lru"
+    "github.com/miekg/dns"
+    "github.com/yl2chen/cidranger"
 )
 
 type AzMapEntry struct {
-	Subnet string `json:"sub"`
-	AZ     string `json:"az"`
+    Subnet string `json:"sub"`
+    AZ     string `json:"az"`
 }
 
 type AzRoute struct {
-	Next      plugin.Handler
-	AzMap     []AzMapEntry
-	AzMapLock sync.RWMutex
-	ApiUrl    string
-	IpAzMap   map[string]string // IP -> AZ
+    Next      plugin.Handler
+    AzMap     []AzMapEntry
+    AzMapLock sync.RWMutex
+    ApiUrl    string
+    AzMapFile string
+    IpAzMap   map[string]string // IP -> AZ
 
-	Ranger  cidranger.Ranger // 新增：高效网段查找结构
-	AzCache *lru.Cache       // 新增：LRU缓存
-	LruSize int              // LRU缓存最大容量
+    Ranger  cidranger.Ranger // 新增：高效网段查找结构
+    AzCache *lru.Cache       // 新增：LRU缓存
+    LruSize int              // LRU缓存最大容量
 }
 
 type responseCaptureWriter struct {
@@ -142,58 +144,114 @@ func (a *AzRoute) findAZ(ip string) string {
 func (a *AzRoute) Name() string { return "azroute" }
 
 func (a *AzRoute) InitAndUpdateAzMap() {
-	a.fetchAzMap()
-	size := a.LruSize
-	if size <= 0 {
-		size = 1024 // 默认值
-	}
-	cache, err := lru.New(size)
+    // 初始加载
+    combined := a.combineAzMaps()
+    if len(combined) > 0 {
+        a.setAzMap(combined)
+    }
+    size := a.LruSize
+    if size <= 0 {
+        size = 1024 // 默认值
+    }
+    cache, err := lru.New(size)
 	if err != nil {
 		log.Printf("[azroute] LRU缓存初始化失败: %v", err)
 	} else {
 		a.AzCache = cache
 	}
-	go func() {
-		for {
-			time.Sleep(60 * time.Second)
-			a.fetchAzMap()
-		}
-	}()
+    go func() {
+        for {
+            time.Sleep(60 * time.Second)
+            combined := a.combineAzMaps()
+            if len(combined) > 0 {
+                a.setAzMap(combined)
+            }
+        }
+    }()
 }
 
-func (a *AzRoute) fetchAzMap() {
-	resp, err := http.Get(a.ApiUrl)
-	if err != nil {
-		log.Printf("[azroute] fetch API error: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("[azroute] read API body error: %v", err)
-		return
-	}
-	var azmap []AzMapEntry
-	if err := json.Unmarshal(body, &azmap); err != nil {
-		log.Printf("[azroute] unmarshal API json error: %v", err)
-		return
-	}
-	a.AzMapLock.Lock()
-	a.AzMap = azmap
-	// 构建Ranger
-	ranger := cidranger.NewPCTrieRanger()
-	for _, entry := range azmap {
-		_, network, err := net.ParseCIDR(entry.Subnet)
-		if err == nil {
-			ranger.Insert(&azRangerEntry{network: *network, az: entry.AZ})
-		}
-	}
-	a.Ranger = ranger
-	if a.AzCache != nil {
-		a.AzCache.Purge() // 热加载时清空缓存
-	}
-	a.AzMapLock.Unlock()
-	log.Printf("[azroute] API数据已热加载")
+// setAzMap 将映射设置到插件并重建索引及缓存
+func (a *AzRoute) setAzMap(azmap []AzMapEntry) {
+    a.AzMapLock.Lock()
+    a.AzMap = azmap
+    // 构建Ranger
+    ranger := cidranger.NewPCTrieRanger()
+    for _, entry := range azmap {
+        _, network, err := net.ParseCIDR(entry.Subnet)
+        if err == nil {
+            ranger.Insert(&azRangerEntry{network: *network, az: entry.AZ})
+        }
+    }
+    a.Ranger = ranger
+    if a.AzCache != nil {
+        a.AzCache.Purge() // 热加载时清空缓存
+    }
+    a.AzMapLock.Unlock()
+}
+
+// combineAzMaps 从 API 与文件中加载并合并映射，文件条目优先生效
+func (a *AzRoute) combineAzMaps() []AzMapEntry {
+    combined := make(map[string]AzMapEntry)
+    // 先加载 API
+    if a.ApiUrl != "" {
+        if apiEntries, err := a.fetchAzMapFromAPI(); err != nil {
+            log.Printf("[azroute] fetch API error: %v", err)
+        } else {
+            for _, e := range apiEntries {
+                combined[e.Subnet] = e
+            }
+        }
+    }
+    // 再加载文件，覆盖同 subnet 的条目
+    if a.AzMapFile != "" {
+        if fileEntries, err := a.fetchAzMapFromFile(); err != nil {
+            log.Printf("[azroute] read azmap_file error: %v", err)
+        } else {
+            for _, e := range fileEntries {
+                combined[e.Subnet] = e
+            }
+        }
+    }
+    // 转回 slice
+    res := make([]AzMapEntry, 0, len(combined))
+    for _, v := range combined {
+        res = append(res, v)
+    }
+    if len(res) > 0 {
+        log.Printf("[azroute] 已合并AZ映射，来源: API=%t, File=%t, 总数=%d", a.ApiUrl != "", a.AzMapFile != "", len(res))
+    }
+    return res
+}
+
+// fetchAzMapFromAPI 拉取 API 映射
+func (a *AzRoute) fetchAzMapFromAPI() ([]AzMapEntry, error) {
+    resp, err := http.Get(a.ApiUrl)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return nil, err
+    }
+    var azmap []AzMapEntry
+    if err := json.Unmarshal(body, &azmap); err != nil {
+        return nil, err
+    }
+    return azmap, nil
+}
+
+// fetchAzMapFromFile 从本地文件读取映射，文件内容为 JSON 数组 [{"sub":"CIDR","az":"az-x"}, ...]
+func (a *AzRoute) fetchAzMapFromFile() ([]AzMapEntry, error) {
+    data, err := os.ReadFile(a.AzMapFile)
+    if err != nil {
+        return nil, err
+    }
+    var azmap []AzMapEntry
+    if err := json.Unmarshal(data, &azmap); err != nil {
+        return nil, err
+    }
+    return azmap, nil
 }
 
 // azRangerEntry实现cidranger.RangerEntry接口
@@ -208,7 +266,7 @@ func (e *azRangerEntry) Network() net.IPNet {
 }
 
 func (e *azRangerEntry) AZ() string {
-	return e.az
+    return e.az
 }
 
 // getClientIP 提取客户端IP

@@ -96,3 +96,39 @@ dig @127.0.0.1 example.com
 - API 服务不可用时，插件会打印日志，使用上一次缓存的数据。
 - **azroute 必须在 hosts 之前，否则调度无效！**
 - 支持 A/AAAA 记录，其他类型直接透传。 
+
+## 6.1 扩展 Corefile 配置示例（含文件）
+
+```txt
+. {
+    azroute {
+        # 可选：从API拉取网段-AZ映射
+        azmap_api http://localhost:8080/azmap
+        # 可选：从本地文件加载网段-AZ映射（JSON数组格式，示例见下文）
+        azmap_file ./azmap.json
+        # 可选：LRU缓存容量（默认1024）
+        # lru_size 2048
+    }
+    hosts ./hosts {
+        fallthrough
+    }
+    forward . 8.8.8.8
+    log
+}
+```
+
+## 4.1 文件配置格式（azmap_file）
+与 API 相同，为 JSON 数组：
+```json
+[
+  {"sub": "10.0.0.0/24", "az": "az-a"},
+  {"sub": "10.0.1.0/24", "az": "az-b"}
+]
+```
+说明：
+- 支持 IPv4/IPv6 CIDR（如 "2001:db8::/32"）。
+- 若同时配置了 azmap_api 与 azmap_file，文件条目会覆盖相同 subnet 的 API 条目；其他保持并集。
+
+## 备注
+- 如已配置 azmap_file，本地文件会与 API 数据合并，且每 60 秒热加载更新。
+- 可选：如果仅使用文件映射，可不启动 API 服务。
