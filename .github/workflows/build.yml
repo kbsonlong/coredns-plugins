@@ -1,56 +1,113 @@
-name: Build CoreDNS with azroute/splitnet/georoute
+name: Build & Publish CoreDNS with Plugins
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
-  build-coredns-with-plugins:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        goos: [linux, darwin]
-        goarch: [amd64, arm64]
-    runs-on: ${{ matrix.os }}
+  docker-build-and-push:
+    name: Build and push multi-arch Docker image
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
+      - name: Checkout
+        uses: actions/checkout@v3
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
 
-      - name: Cache Go modules
-        uses: actions/cache@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v2
         with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/coredns-with-plugins
+          tags: |
+            type=sha
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: docker/Dockerfile.coredns
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  export-binaries:
+    name: Export built coredns binaries and upload artifacts
+    needs: docker-build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull image and extract linux/amd64 binary
+        run: |
+          set -eux
+          mkdir -p build-output
+          docker pull ghcr.io/${{ github.repository_owner }}/coredns-with-plugins:${{ github.sha }}
+          cid=$(docker create ghcr.io/${{ github.repository_owner }}/coredns-with-plugins:${{ github.sha }})
+          docker cp "$cid":/usr/local/bin/coredns ./build-output/coredns-linux-amd64
+          docker rm "$cid"
+
+      - name: Pull image and extract linux/arm64 binary
+        run: |
+          set -eux
+          docker pull --platform linux/arm64 ghcr.io/${{ github.repository_owner }}/coredns-with-plugins:${{ github.sha }}
+          cid2=$(docker create --platform linux/arm64 ghcr.io/${{ github.repository_owner }}/coredns-with-plugins:${{ github.sha }})
+          docker cp "$cid2":/usr/local/bin/coredns ./build-output/coredns-linux-arm64
+          docker rm "$cid2"
+
+      - name: Upload artifacts (linux/amd64, linux/arm64)
+        uses: actions/upload-artifact@v3
+        with:
+          name: coredns-with-plugins-${{ github.sha }}
           path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+            build-output/coredns-linux-amd64
+            build-output/coredns-linux-arm64
 
-      - name: Clone CoreDNS source
-        run: |
-          git clone --depth 1 https://github.com/coredns/coredns.git coredns-src
-
-      - name: Build CoreDNS with plugins (multi-arch)
-        shell: bash
-        env:
-          CI: true
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
-        run: |
-          chmod +x build-test.sh
-          ./build-test.sh "$(pwd)/coredns-src"
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+  release-binaries:
+    name: Publish binaries to GitHub Release (on tag)
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: export-binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
         with:
-          name: coredns-with-plugins-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: build-output/coredns-with-plugins
+          name: coredns-with-plugins-${{ github.sha }}
+          path: build-output
+
+      - name: Create Release and upload assets
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            build-output/coredns-linux-amd64
+            build-output/coredns-linux-arm64
+          fail_on_unmatched_files: true
