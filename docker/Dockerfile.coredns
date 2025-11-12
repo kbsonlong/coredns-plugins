@@ -1,5 +1,5 @@
 # CoreDNS with custom plugins Dockerfile (Static Build)
-FROM golang:1.23-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # 安装构建依赖
 RUN apk add --no-cache git make
@@ -15,24 +15,16 @@ COPY plugins/azroute/ /app/coredns/plugin/azroute/
 COPY plugins/splitnet/ /app/coredns/plugin/splitnet/
 COPY plugins/georoute/ /app/coredns/plugin/georoute/
 
-# 修改 CoreDNS 的 plugin.cfg 文件，将自定义插件插入到 hosts 插件之后
-RUN sed -i '/^hosts:hosts/a azroute:azroute\nsplitnet:splitnet\ngeoroute:georoute' /app/coredns/plugin.cfg
+# 将自定义插件插入到 hosts 插件之后（使用 awk，失败则附加到文件末尾）
+RUN set -eux; cd /app/coredns; \
+    awk 'BEGIN{added=0} {print} /^hosts:hosts$/ && !added { print "azroute:azroute"; print "splitnet:splitnet"; print "georoute:georoute"; added=1 } END{ if(!added){ print "azroute:azroute"; print "splitnet:splitnet"; print "georoute:georoute" } }' plugin.cfg > plugin.cfg.new && mv plugin.cfg.new plugin.cfg
 
-# 修改 CoreDNS 的 go.mod，添加我们的插件依赖，并用 replace 指向本地插件源码
-RUN cd /app/coredns && \
-    go mod edit -replace=github.com/coredns/coredns/plugin/azroute=./plugin/azroute && \
-    go mod edit -replace=github.com/coredns/coredns/plugin/splitnet=./plugin/splitnet && \
-    go mod edit -replace=github.com/coredns/coredns/plugin/georoute=./plugin/georoute && \
-    go mod edit -require=github.com/oschwald/geoip2-golang@v1.9.0 && \
-    go mod edit -require=github.com/oschwald/maxminddb-golang@v1.12.0 && \
-    go mod edit -require=github.com/hashicorp/golang-lru@v1.0.2 && \
-    go mod edit -require=github.com/yl2chen/cidranger@v1.0.2 && \
-    go mod tidy && \
-    go mod edit -require=github.com/coredns/coredns/plugin/azroute@v0.0.0 && \
-    go mod edit -require=github.com/coredns/coredns/plugin/splitnet@v0.0.0 && \
-    go mod edit -require=github.com/coredns/coredns/plugin/georoute@v0.0.0 && \
-    go generate && \
-    go build -o coredns
+# 规范化 go.mod：去掉 toolchain 行；将 go 版本去掉补丁号（如 1.24.0 -> 1.24）
+RUN set -eux; cd /app/coredns; \
+    awk 'BEGIN{} /^toolchain /{next} /^go [0-9]+\.[0-9]+(\.[0-9]+)?/{ split($2, v, "."); print "go " v[1] "." v[2]; next } {print}' go.mod > go.mod.new && mv go.mod.new go.mod
+
+# 根据插件源码导入自动解析依赖并整理模块
+RUN set -eux; cd /app/coredns; go mod tidy; go generate; go build -o coredns
 
 # 创建运行时镜像
 FROM alpine:latest
@@ -73,4 +65,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 
 # 启动命令
 ENTRYPOINT ["/usr/local/bin/coredns"]
-CMD ["-conf", "/etc/coredns/Corefile"] 
+CMD ["-conf", "/etc/coredns/Corefile"]
